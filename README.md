@@ -24,39 +24,39 @@ WPT-derived test vector, while `todo` denotes unimplemented operations.
 
 | Operation | Status | Operation | Status | Operation | Status |
 |-----------|--------|-----------|--------|-----------|--------|
-| `abs` | todo | `add` | done | `argMax` | todo |
-| `argMin` | todo | `averagePool2d` | done | `batchNormalization` | done |
-| `cast` | todo | `ceil` | todo | `clamp` | done |
-| `concat` | done | `constant` | done | `conv2d` | done |
-| `convTranspose2d` | todo | `cos` | todo | `cumulativeSum` | todo |
-| `dequantizeLinear` | todo | `div` | todo | `elu` | todo |
-| `equal` | todo | `erf` | todo | `exp` | todo |
-| `expand` | todo | `floor` | todo | `gather` | done |
-| `gatherElements` | todo | `gatherND` | todo | `gelu` | todo |
-| `gemm` | todo | `greater` | todo | `greaterOrEqual` | todo |
-| `gru` | todo | `gruCell` | todo | `hardSigmoid` | todo |
-| `hardSwish` | todo | `identity` | todo | `input` | done |
-| `instanceNormalization` | todo | `isInfinite` | todo | `isNaN` | todo |
-| `l2Pool2d` | todo | `layerNormalization` | todo | `leakyRelu` | todo |
-| `lesser` | todo | `lesserOrEqual` | todo | `linear` | todo |
-| `log` | todo | `logicalAnd` | todo | `logicalNot` | todo |
-| `logicalOr` | todo | `logicalXor` | todo | `lstm` | todo |
-| `lstmCell` | todo | `matmul` | done | `max` | todo |
-| `maxPool2d` | done | `min` | todo | `mul` | todo |
-| `neg` | todo | `notEqual` | todo | `pad` | todo |
-| `pow` | todo | `prelu` | todo | `quantizeLinear` | todo |
-| `reciprocal` | todo | `reduceL1` | todo | `reduceL2` | todo |
-| `reduceLogSum` | todo | `reduceLogSumExp` | todo | `reduceMax` | todo |
-| `reduceMean` | todo | `reduceMin` | todo | `reduceProduct` | todo |
-| `reduceSum` | todo | `reduceSumSquare` | todo | `relu` | done |
-| `resample2d` | todo | `reshape` | done | `reverse` | todo |
-| `roundEven` | todo | `scatterElements` | todo | `scatterND` | todo |
-| `sigmoid` | done | `sign` | todo | `sin` | todo |
-| `slice` | done | `softmax` | done | `softplus` | todo |
-| `softsign` | todo | `split` | todo | `sqrt` | todo |
-| `sub` | todo | `tan` | todo | `tanh` | done |
-| `tile` | todo | `transpose` | done | `triangular` | todo |
-| `where` | todo |   |   |   |   |
+| `abs` |  | `add` | ✓ | `argMax` |  |
+| `argMin` |  | `averagePool2d` | ✓ | `batchNormalization` | ✓ |
+| `cast` |  | `ceil` |  | `clamp` | ✓ |
+| `concat` | ✓ | `constant` | ✓ | `conv2d` | ✓ |
+| `convTranspose2d` |  | `cos` |  | `cumulativeSum` |  |
+| `dequantizeLinear` |  | `div` |  | `elu` |  |
+| `equal` |  | `erf` |  | `exp` |  |
+| `expand` |  | `floor` |  | `gather` | ✓ |
+| `gatherElements` |  | `gatherND` |  | `gelu` |  |
+| `gemm` |  | `greater` |  | `greaterOrEqual` |  |
+| `gru` |  | `gruCell` |  | `hardSigmoid` |  |
+| `hardSwish` |  | `identity` |  | `input` | ✓ |
+| `instanceNormalization` |  | `isInfinite` |  | `isNaN` |  |
+| `l2Pool2d` |  | `layerNormalization` |  | `leakyRelu` |  |
+| `lesser` |  | `lesserOrEqual` |  | `linear` |  |
+| `log` |  | `logicalAnd` |  | `logicalNot` |  |
+| `logicalOr` |  | `logicalXor` |  | `lstm` |  |
+| `lstmCell` |  | `matmul` | ✓ | `max` |  |
+| `maxPool2d` | ✓ | `min` |  | `mul` |  |
+| `neg` |  | `notEqual` |  | `pad` |  |
+| `pow` |  | `prelu` |  | `quantizeLinear` |  |
+| `reciprocal` |  | `reduceL1` |  | `reduceL2` |  |
+| `reduceLogSum` |  | `reduceLogSumExp` |  | `reduceMax` |  |
+| `reduceMean` |  | `reduceMin` |  | `reduceProduct` |  |
+| `reduceSum` |  | `reduceSumSquare` |  | `relu` | ✓ |
+| `resample2d` |  | `reshape` | ✓ | `reverse` |  |
+| `roundEven` |  | `scatterElements` |  | `scatterND` |  |
+| `sigmoid` | ✓ | `sign` |  | `sin` |  |
+| `slice` | ✓ | `softmax` | ✓ | `softplus` |  |
+| `softsign` |  | `split` |  | `sqrt` |  |
+| `sub` |  | `tan` |  | `tanh` | ✓ |
+| `tile` |  | `transpose` | ✓ | `triangular` |  |
+| `where` |  |   |   |   |   |
 
 ## Missing pieces
 
