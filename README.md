@@ -14,3 +14,37 @@ solely for experimentation:
 The intent is educational: to explore how a WebNN graph builder might look,
 experiment with device selection (CPU/GPU/NPU), and compare a dynamic Python
 runtime with a statically compiled Rust backend.
+
+## Implemented operators
+
+Both backends currently support the following operations:
+
+- `input` and `constant` operands for feeding graph values.
+- Elementwise math: `add`, `clamp`, activation functions (`relu`, `sigmoid`,
+  `tanh`), and `softmax`.
+- Linear algebra: `matmul`.
+- Convolutional ops: `conv2d` (NCHW inputs, OIHW filters, optional bias),
+  `maxPool2d`, and `averagePool2d`.
+- Tensor transforms: `reshape`, `transpose`, and `concat`.
+
+Every op listed above has at least one WPT-derived test vector in
+`tests/data/` and is exercised via the conformance suites in
+`tests/test_matmul.py` and `tests/test_wpt_ops.py`.
+
+## Missing pieces
+
+This is not a complete WebNN implementation. Notable omissions include:
+
+- Many WebNN ops (e.g., `batchNormalization`, `gather`, `slice`, `element-wise`
+  variations, activation/broadcast variants beyond the basics).
+- Advanced conv2d features such as NHWC inputs, HWIO filters, fused activations,
+  automatic padding modes beyond the simple SAME/VALID that the Rust backend
+  understands.
+- Tensor layout/quantization controls, operand type promotion, and shape
+  inference logic from the spec.
+- Execution features like streaming inputs, tensor views, memory planning, and
+  async graph execution.
+
+Extending the operator surface is straightforward: add the op to
+`webnn/__init__.py`, teach the Rust backend how to evaluate it, and port the
+corresponding WPT vectors into `tests/data/` so both backends stay in sync.
