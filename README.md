@@ -15,23 +15,48 @@ The intent is educational: to explore how a WebNN graph builder might look,
 experiment with device selection (CPU/GPU/NPU), and compare a dynamic Python
 runtime with a statically compiled Rust backend.
 
-## Implemented operators
+## Operator coverage
 
-Both backends currently support the following operations:
+The [WebNN specification](https://www.w3.org/TR/webnn/) defines the following
+`MLGraphBuilder` methods. The table tracks PyWebNN’s current implementation
+status; `done` means there is a backend implementation plus at least one
+WPT-derived test vector, while `todo` denotes unimplemented operations.
 
-- `input` and `constant` operands for feeding graph values.
-- Elementwise math: `add`, `clamp`, activation functions (`relu`, `sigmoid`,
-  `tanh`), and `softmax`.
-- Normalization: `batchNormalization`.
-- Linear algebra: `matmul`.
-- Convolutional ops: `conv2d` (NCHW inputs, OIHW filters, optional bias),
-  `maxPool2d`, and `averagePool2d`.
-- Tensor transforms and indexing: `reshape`, `transpose`, `concat`, `slice`,
-  and `gather`.
-
-Every op listed above has at least one WPT-derived test vector in
-`tests/data/` and is exercised via the conformance suites in
-`tests/test_matmul.py` and `tests/test_wpt_ops.py`.
+| Operation | Status | Operation | Status | Operation | Status |
+|-----------|--------|-----------|--------|-----------|--------|
+| `abs` | todo | `add` | done | `argMax` | todo |
+| `argMin` | todo | `averagePool2d` | done | `batchNormalization` | done |
+| `cast` | todo | `ceil` | todo | `clamp` | done |
+| `concat` | done | `constant` | done | `conv2d` | done |
+| `convTranspose2d` | todo | `cos` | todo | `cumulativeSum` | todo |
+| `dequantizeLinear` | todo | `div` | todo | `elu` | todo |
+| `equal` | todo | `erf` | todo | `exp` | todo |
+| `expand` | todo | `floor` | todo | `gather` | done |
+| `gatherElements` | todo | `gatherND` | todo | `gelu` | todo |
+| `gemm` | todo | `greater` | todo | `greaterOrEqual` | todo |
+| `gru` | todo | `gruCell` | todo | `hardSigmoid` | todo |
+| `hardSwish` | todo | `identity` | todo | `input` | done |
+| `instanceNormalization` | todo | `isInfinite` | todo | `isNaN` | todo |
+| `l2Pool2d` | todo | `layerNormalization` | todo | `leakyRelu` | todo |
+| `lesser` | todo | `lesserOrEqual` | todo | `linear` | todo |
+| `log` | todo | `logicalAnd` | todo | `logicalNot` | todo |
+| `logicalOr` | todo | `logicalXor` | todo | `lstm` | todo |
+| `lstmCell` | todo | `matmul` | done | `max` | todo |
+| `maxPool2d` | done | `min` | todo | `mul` | todo |
+| `neg` | todo | `notEqual` | todo | `pad` | todo |
+| `pow` | todo | `prelu` | todo | `quantizeLinear` | todo |
+| `reciprocal` | todo | `reduceL1` | todo | `reduceL2` | todo |
+| `reduceLogSum` | todo | `reduceLogSumExp` | todo | `reduceMax` | todo |
+| `reduceMean` | todo | `reduceMin` | todo | `reduceProduct` | todo |
+| `reduceSum` | todo | `reduceSumSquare` | todo | `relu` | done |
+| `resample2d` | todo | `reshape` | done | `reverse` | todo |
+| `roundEven` | todo | `scatterElements` | todo | `scatterND` | todo |
+| `sigmoid` | done | `sign` | todo | `sin` | todo |
+| `slice` | done | `softmax` | done | `softplus` | todo |
+| `softsign` | todo | `split` | todo | `sqrt` | todo |
+| `sub` | todo | `tan` | todo | `tanh` | done |
+| `tile` | todo | `transpose` | done | `triangular` | todo |
+| `where` | todo |   |   |   |   |
 
 ## Missing pieces
 
