@@ -77,3 +77,17 @@ class MaxPool2dConformanceTests(WPTConformanceBase):
 
     def test_maxpool2d(self):
         self._run_cases_from_file()
+
+
+class GatherConformanceTests(WPTConformanceBase):
+    data_file = "gather_tests.json"
+
+    def test_gather(self):
+        self._run_cases_from_file()
+
+
+class SliceConformanceTests(WPTConformanceBase):
+    data_file = "slice_tests.json"
+
+    def test_slice(self):
+        self._run_cases_from_file()

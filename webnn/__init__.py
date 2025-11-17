@@ -53,13 +53,19 @@ import torch.nn.functional as F
 os.environ.setdefault("LIBTORCH_USE_PYTORCH", "1")
 os.environ.setdefault("LIBTORCH_BYPASS_VERSION_CHECK", "1")
 
+
 def _load_torch_shared_libs() -> None:
     if sys.platform != "darwin":
         return
     lib_dir = Path(torch.__file__).resolve().parent / "lib"
     if not lib_dir.is_dir():
         return
-    for name in ("libtorch_cpu.dylib", "libc10.dylib", "libtorch.dylib", "libtorch_python.dylib"):
+    for name in (
+        "libtorch_cpu.dylib",
+        "libc10.dylib",
+        "libtorch.dylib",
+        "libtorch_python.dylib",
+    ):
         candidate = lib_dir / name
         if candidate.exists():
             try:
@@ -67,11 +73,14 @@ def _load_torch_shared_libs() -> None:
             except OSError:
                 pass
 
+
 _load_torch_shared_libs()
 
 try:  # pragma: no cover - optional dependency
     import pywebnn_rust as _rust_backend
 
+    if not hasattr(_rust_backend, "execute"):  # type: ignore[attr-defined]
+        raise ImportError("pywebnn_rust missing execute")
     _HAS_RUST_BACKEND = True
 except ImportError:  # pragma: no cover - optional dependency
     _rust_backend = None
@@ -82,7 +91,9 @@ TensorLike = Union[torch.Tensor, np.ndarray, float, int]
 
 
 def _to_tensor(
-    x: TensorLike, dtype: Optional[torch.dtype] = None, device: Optional[torch.device] = None
+    x: TensorLike,
+    dtype: Optional[torch.dtype] = None,
+    device: Optional[torch.device] = None,
 ) -> torch.Tensor:
     if isinstance(x, torch.Tensor):
         t = x
@@ -108,7 +119,7 @@ def _dtype_from_str(dt: str) -> torch.dtype:
         "bfloat16": torch.bfloat16,
         "int32": torch.int32,
         "int64": torch.int64,
-        "uint32": torch.int32,  # toy simplification
+        "uint32": torch.int64,
     }
     if dt not in mapping:
         raise ValueError(f"Unsupported dataType '{dt}' in toy impl")
@@ -201,7 +212,9 @@ class MLContext:
         self._backend = backend
 
     @staticmethod
-    def _resolve_device(device_like: Optional[Union[str, torch.device]]) -> torch.device:
+    def _resolve_device(
+        device_like: Optional[Union[str, torch.device]],
+    ) -> torch.device:
         if device_like is None:
             return _auto_select_device()
         if isinstance(device_like, torch.device):
@@ -266,8 +279,17 @@ class MLGraphBuilder:
     # -- helper to register op outputs ---------------------------------------
     def _emit(self, op: str, inputs: List[MLOperand], **attrs) -> MLOperand:
         node = _Node(op=op, inputs=inputs, attrs=attrs)
-        # Infer a basic descriptor based on first input
-        base = inputs[0].descriptor if inputs else MLOperandDescriptor()
+        # Infer a basic descriptor based on first input, but clone to avoid aliasing
+        if inputs:
+            first = inputs[0].descriptor
+            dims = (
+                list(first.dimensions)
+                if first.dimensions is not None
+                else None
+            )
+            base = MLOperandDescriptor(dataType=first.dataType, dimensions=dims)
+        else:
+            base = MLOperandDescriptor()
         operand_id = self._allocate_operand_id()
         out = MLOperand(self, operand_id, name=None, desc=base, node=node)
         self._operands.append(out)
@@ -363,6 +385,30 @@ class MLGraphBuilder:
 
     def concat(self, inputs: List[MLOperand], axis: int = 0) -> MLOperand:
         return self._emit("concat", inputs, axis=axis)
+
+    def gather(self, x: MLOperand, indices: MLOperand, *, axis: int = 0) -> MLOperand:
+        out = self._emit("gather", [x, indices], axis=axis)
+        out.descriptor.dimensions = _gather_output_dims(
+            x.descriptor, indices.descriptor, axis
+        )
+        return out
+
+    def slice(
+        self,
+        x: MLOperand,
+        starts: List[int],
+        sizes: List[int],
+        strides: Optional[List[int]] = None,
+    ) -> MLOperand:
+        out = self._emit(
+            "slice",
+            [x],
+            starts=list(starts),
+            sizes=list(sizes),
+            strides=list(strides) if strides is not None else None,
+        )
+        out.descriptor.dimensions = _slice_output_dims(x.descriptor, sizes, strides)
+        return out
 
     # -- build ---------------------------------------------------------------
     def build(self, outputs: Dict[str, MLOperand]) -> "MLGraph":
@@ -568,10 +614,17 @@ def _eval_node(node: _Node, xs: List[torch.Tensor]) -> torch.Tensor:
         x = xs[0]
         lo = node.attrs.get("min")
         hi = node.attrs.get("max")
-        if lo is not None:
-            x = torch.maximum(x, torch.tensor(lo, dtype=x.dtype, device=x.device))
-        if hi is not None:
-            x = torch.minimum(x, torch.tensor(hi, dtype=x.dtype, device=x.device))
+        if lo is not None or hi is not None:
+            if not x.is_floating_point():
+                info = torch.iinfo(x.dtype)
+                if lo is not None:
+                    lo = max(int(lo), info.min)
+                if hi is not None:
+                    hi = min(int(hi), info.max)
+            if lo is not None:
+                x = torch.maximum(x, torch.tensor(lo, dtype=x.dtype, device=x.device))
+            if hi is not None:
+                x = torch.minimum(x, torch.tensor(hi, dtype=x.dtype, device=x.device))
         return x
     if op == "relu":
         return F.relu(xs[0])
@@ -621,6 +674,45 @@ def _eval_node(node: _Node, xs: List[torch.Tensor]) -> torch.Tensor:
     if op == "concat":
         axis = int(node.attrs.get("axis", 0))
         return torch.cat(xs, dim=axis)
+    if op == "gather":
+        data, indices = xs
+        axis = _normalize_axis(node.attrs.get("axis", 0), data.dim())
+        idx = indices.to(torch.long)
+        if data.shape[axis] == 0:
+            raise RuntimeError("Cannot gather on empty axis")
+        idx = idx.clamp(0, data.shape[axis] - 1)
+        flat = idx.reshape(-1)
+        gathered = torch.index_select(data, dim=axis, index=flat)
+        target_shape = list(data.shape)
+        target_shape.pop(axis)
+        idx_shape = list(idx.shape)
+        for offset, dim in enumerate(idx_shape):
+            target_shape.insert(axis + offset, dim)
+        if not target_shape:
+            return gathered.reshape(())
+        return gathered.reshape(target_shape)
+    if op == "slice":
+        tensor = xs[0]
+        starts = node.attrs.get("starts", [])
+        sizes = node.attrs.get("sizes", [])
+        strides = node.attrs.get("strides") or []
+        if not starts:
+            return tensor
+        if len(starts) != len(sizes):
+            raise RuntimeError("slice starts and sizes must match in length")
+        slices: List[slice] = []
+        for dim, (start, size) in enumerate(zip(starts, sizes)):
+            step = 1
+            if dim < len(strides) and strides[dim] is not None:
+                step = int(strides[dim])
+            if step <= 0:
+                raise RuntimeError("slice strides must be positive")
+            stop = int(start) + int(size)
+            slices.append(slice(int(start), stop, step))
+        # pad remaining dimensions
+        for _ in range(len(starts), tensor.ndim):
+            slices.append(slice(None))
+        return tensor[tuple(slices)]
 
     raise NotImplementedError(f"Op not implemented in toy runtime: {op}")
 
@@ -648,10 +740,15 @@ def _tensor_shape(t: torch.Tensor) -> List[int]:
     return [int(d) for d in t.shape]
 
 
-def _tensor_to_flat_list(t: torch.Tensor) -> List[float]:
+def _tensor_to_flat_list(t: torch.Tensor, dtype_str: str = None) -> List[float]:
     data = t.detach().cpu()
-    if data.dtype == torch.float16:
-        data = data.to(torch.float32)
+    if dtype_str is None:
+        return data.reshape(-1).tolist()
+    if dtype_str in ("float32", "float16", "bfloat16"):
+        if data.dtype == torch.float16:
+            data = data.to(torch.float32)
+        return data.reshape(-1).tolist()
+    data = data.to(torch.int64)
     return data.reshape(-1).tolist()
 
 
@@ -664,13 +761,62 @@ def _serialize_attrs(attrs: Dict[str, Any]) -> Dict[str, Any]:
     return {k: convert(v) for k, v in attrs.items()}
 
 
+def _normalize_axis(axis: int, rank: int) -> int:
+    if rank == 0:
+        raise ValueError("Axis normalization on empty rank")
+    ax = int(axis)
+    if ax < 0:
+        ax += rank
+    if ax < 0 or ax >= rank:
+        raise ValueError(f"Axis {axis} out of range for rank {rank}")
+    return ax
+
+
+def _gather_output_dims(
+    data_desc: MLOperandDescriptor,
+    index_desc: MLOperandDescriptor,
+    axis: int,
+) -> Optional[List[Optional[int]]]:
+    dims = list(data_desc.dimensions or [])
+    if not dims:
+        return dims
+    ax = _normalize_axis(axis, len(dims))
+    idx_dims = list(index_desc.dimensions or [])
+    dims.pop(ax)
+    if idx_dims:
+        for offset, dim in enumerate(idx_dims):
+            dims.insert(ax + offset, dim)
+    return dims
+
+
+def _slice_output_dims(
+    data_desc: MLOperandDescriptor,
+    sizes: List[int],
+    strides: Optional[List[int]] = None,
+) -> Optional[List[Optional[int]]]:
+    dims = list(data_desc.dimensions or [])
+    if not sizes:
+        return dims
+    out: List[Optional[int]] = []
+    for i, size in enumerate(sizes):
+        dim = dims[i] if i < len(dims) else None
+        step = 1
+        if strides and i < len(strides) and strides[i] is not None:
+            step = int(strides[i])
+        eff = size if step == 1 else int(math.ceil(size / step))
+        out.append(eff if dim is not None else None)
+    if len(dims) > len(sizes):
+        out.extend(dims[len(sizes) :])
+    return out
+
+
 def _torch_to_payload(
     tensor: TensorLike, descriptor: MLOperandDescriptor
 ) -> Dict[str, Any]:
     t = torch.as_tensor(tensor)
     dt = _dtype_from_str(descriptor.dataType)
     t = t.to(dt).detach().cpu()
-    data = _tensor_to_flat_list(t)
+    data = _tensor_to_flat_list(t, descriptor.dataType)
     shape = _tensor_shape(t)
     return {
         "data": data,
@@ -679,10 +825,19 @@ def _torch_to_payload(
 
 
 def _payload_to_torch(payload: Dict[str, Any], device: torch.device) -> torch.Tensor:
-    dtype = _dtype_from_str(payload["dataType"])
+    dtype_str = payload["dataType"]
+    dtype = _dtype_from_str(dtype_str)
     shape = [int(dim) for dim in payload["shape"]]
-    arr = np.array(payload["data"], dtype=np.float32).reshape(shape)
-    return torch.tensor(arr, dtype=torch.float32, device=device).to(dtype)
+    np_dtype = {
+        "float32": np.float32,
+        "float16": np.float16,
+        "bfloat16": np.float32,
+        "int32": np.int32,
+        "int64": np.int64,
+        "uint32": np.int64,
+    }[dtype_str]
+    arr = np.array(payload["data"], dtype=np_dtype).reshape(shape)
+    return torch.tensor(arr, device=device, dtype=dtype)
 
 
 # --- Minimal test/demo -------------------------------------------------------

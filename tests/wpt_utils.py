@@ -1,29 +1,37 @@
 import json
 import math
 import pathlib
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 import torch
 
 from webnn import MLContext, MLGraphBuilder, MLOperand
 
 BACKENDS: List[str] = ["python"]
 try:  # pragma: no cover - optional dependency
-    import pywebnn_rust as _  # noqa: F401
-
-    BACKENDS.append("rust")
+    import pywebnn_rust as _rust_backend  # type: ignore
 except ImportError:  # pragma: no cover - optional dependency
-    pass
+    _rust_backend = None
+else:  # pragma: no cover - optional dependency
+    if hasattr(_rust_backend, "execute"):
+        BACKENDS.append("rust")
 
 
 DTYPE_MAP: Dict[str, torch.dtype] = {
     "float32": torch.float32,
     "float16": torch.float16,
+    "int32": torch.int32,
+    "int64": torch.int64,
+    "uint32": torch.int64,
 }
 
 DTYPE_TOLERANCE: Dict[str, Tuple[float, float]] = {
     "float32": (1e-4, 1e-4),
     "float16": (1e-2, 1e-2),
+    "int32": (0.0, 0.0),
+    "int64": (0.0, 0.0),
+    "uint32": (0.0, 0.0),
 }
 
 
@@ -81,6 +89,14 @@ def _tensor_from_descriptor(desc: Dict[str, object], values) -> torch.Tensor:
         flat_values = [values]
     if any(v is None for v in flat_values):
         raise UnsupportedCase("Encountered non-finite literal in test data")
+    bounds = _dtype_range(dtype)
+    if bounds is not None:
+        lo, hi = bounds
+        for v in flat_values:
+            if v < lo or v > hi:
+                raise UnsupportedCase(
+                    f"Value {v} out of range for dtype '{dtype}'"
+                )
     tensor = torch.tensor(flat_values, dtype=DTYPE_MAP[dtype])
     shape = desc.get("shape")
     if shape is None:
@@ -91,6 +107,18 @@ def _tensor_from_descriptor(desc: Dict[str, object], values) -> torch.Tensor:
     if expected_elems != tensor.numel():
         raise UnsupportedCase("Shape and data length mismatch in test case")
     return tensor.reshape(shape)
+
+
+def _dtype_range(dtype: str) -> Optional[Tuple[int, int]]:
+    if dtype == "int32":
+        info = np.iinfo(np.int32)
+        return int(info.min), int(info.max)
+    if dtype == "int64":
+        info = np.iinfo(np.int64)
+        return int(info.min), int(info.max)
+    if dtype == "uint32":
+        return 0, 2**32 - 1
+    return None
 
 
 def _prepare_inputs(builder: MLGraphBuilder, inputs: Dict[str, dict]) -> Tuple[Dict[str, MLOperand], Dict[str, torch.Tensor]]:
@@ -130,6 +158,21 @@ def _apply_operator(builder: MLGraphBuilder, operands: Dict[str, MLOperand], op_
     elif name == "softmax":
         axis = args.get("axis", -1)
         result = builder.softmax(operands[args["input"]], axis=axis)
+    elif name == "gather":
+        axis = args.get("options", {}).get("axis", 0)
+        result = builder.gather(
+            operands[args["input"]],
+            operands[args["indices"]],
+            axis=axis,
+        )
+    elif name == "slice":
+        strides = args.get("options", {}).get("strides")
+        result = builder.slice(
+            operands[args["input"]],
+            args.get("starts", []),
+            args.get("sizes", []),
+            strides=strides,
+        )
     elif name == "conv2d":
         result = _apply_conv2d(builder, operands, args)
     elif name == "maxPool2d":
@@ -191,11 +234,11 @@ def _apply_pool(pool_fn, operand: MLOperand, options: dict) -> MLOperand:
     window = opts.get("windowDimensions")
     if window is None:
         dims = operand.descriptor.dimensions
-        if dims is None or len(dims or []) < 2:
+        if not dims or len(dims) < 2:
             raise UnsupportedCase("Pool ops require windowDimensions")
         h, w = dims[-2], dims[-1]
         if h is None or w is None:
-            raise UnsupportedCase("Cannot infer windowDimensions from dynamic shape")
+            raise UnsupportedCase("Cannot infer pool windowDimensions")
         window = [h, w]
     if len(window) != 2:
         raise UnsupportedCase("windowDimensions must have 2 values")

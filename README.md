@@ -8,7 +8,7 @@ solely for experimentation:
 - A secondary backend is written in Rust using the `tch` crate and packaged
   into this project via [maturin](https://github.com/PyO3/maturin).
 - Web Platform Tests (WPT) for ops such as `matmul`, `add`, `clamp`, `relu`,
-  `softmax`, `maxPool2d`, and `conv2d` are ported to Python so both backends can be validated against
+  `softmax`, `maxPool2d`, `gather`, `slice`, and `conv2d` are ported to Python so both backends can be validated against
   the same reference data.
 
 The intent is educational: to explore how a WebNN graph builder might look,
@@ -25,7 +25,8 @@ Both backends currently support the following operations:
 - Linear algebra: `matmul`.
 - Convolutional ops: `conv2d` (NCHW inputs, OIHW filters, optional bias),
   `maxPool2d`, and `averagePool2d`.
-- Tensor transforms: `reshape`, `transpose`, and `concat`.
+- Tensor transforms and indexing: `reshape`, `transpose`, `concat`, `slice`,
+  and `gather`.
 
 Every op listed above has at least one WPT-derived test vector in
 `tests/data/` and is exercised via the conformance suites in
@@ -35,7 +36,7 @@ Every op listed above has at least one WPT-derived test vector in
 
 This is not a complete WebNN implementation. Notable omissions include:
 
-- Many WebNN ops (e.g., `batchNormalization`, `gather`, `slice`, `element-wise`
+- Many WebNN ops (e.g., `batchNormalization`, `element-wise`
   variations, activation/broadcast variants beyond the basics).
 - Advanced conv2d features such as NHWC inputs, HWIO filters, fused activations,
   automatic padding modes beyond the simple SAME/VALID that the Rust backend
