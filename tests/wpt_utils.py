@@ -125,11 +125,19 @@ def _apply_operator(builder: MLGraphBuilder, operands: Dict[str, MLOperand], op_
             minValue=options.get("minValue"),
             maxValue=options.get("maxValue"),
         )
+    elif name == "relu":
+        result = builder.relu(operands[args["input"]])
     elif name == "softmax":
         axis = args.get("axis", -1)
         result = builder.softmax(operands[args["input"]], axis=axis)
     elif name == "conv2d":
         result = _apply_conv2d(builder, operands, args)
+    elif name == "maxPool2d":
+        result = _apply_pool(
+            builder.maxPool2d,
+            operands[args["input"]],
+            args.get("options", {}),
+        )
     elif name == "matmul":
         result = builder.matmul(operands[args["a"]], operands[args["b"]])
     else:
@@ -175,4 +183,43 @@ def _apply_conv2d(builder: MLGraphBuilder, operands: Dict[str, MLOperand], args:
         dilations=tuple(int(d) for d in dilations),
         padding=padding,
         groups=int(options.get("groups", 1)),
+    )
+
+
+def _apply_pool(pool_fn, operand: MLOperand, options: dict) -> MLOperand:
+    opts = options or {}
+    window = opts.get("windowDimensions")
+    if window is None:
+        dims = operand.descriptor.dimensions
+        if dims is None or len(dims or []) < 2:
+            raise UnsupportedCase("Pool ops require windowDimensions")
+        h, w = dims[-2], dims[-1]
+        if h is None or w is None:
+            raise UnsupportedCase("Cannot infer windowDimensions from dynamic shape")
+        window = [h, w]
+    if len(window) != 2:
+        raise UnsupportedCase("windowDimensions must have 2 values")
+    layout = opts.get("layout", "nchw")
+    if layout != "nchw":
+        raise UnsupportedCase(f"Unsupported pool layout '{layout}'")
+    strides = tuple(opts.get("strides", (1, 1)))
+    padding = opts.get("padding", "valid")
+    if isinstance(padding, list):
+        if len(padding) != 4:
+            raise UnsupportedCase("Pool padding list must have 4 elements")
+        pad_top, pad_bottom, pad_left, pad_right = padding
+        padding = (pad_left, pad_right, pad_top, pad_bottom)
+    dilations = tuple(opts.get("dilations", (1, 1)))
+    if dilations != (1, 1):
+        raise UnsupportedCase("Pool dilations other than 1 are not supported")
+    rounding = opts.get("roundingType")
+    if rounding not in (None, "floor"):
+        raise UnsupportedCase(f"Unsupported roundingType '{rounding}'")
+    if opts.get("outputSizes") not in (None, []):
+        raise UnsupportedCase("Pool outputSizes not supported")
+    return pool_fn(
+        operand,
+        windowDimensions=tuple(int(v) for v in window),
+        strides=tuple(int(s) for s in strides),
+        padding=padding,
     )

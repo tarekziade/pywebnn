@@ -181,11 +181,16 @@ fn eval_node(node: &NodeSpec, inputs: &[ValueTensor]) -> Result<ValueTensor> {
             let axis = attr_i64(&node.attrs, "axis")?.unwrap_or(-1);
             inputs[0].tensor.softmax(axis, Kind::Float)
         }
+        "relu" => {
+            ensure_inputs("relu", inputs, 1)?;
+            inputs[0].tensor.relu()
+        }
         "matmul" => {
             ensure_inputs("matmul", inputs, 2)?;
             inputs[0].tensor.matmul(&inputs[1].tensor)
         }
         "conv2d" => eval_conv2d(node, inputs)?,
+        "maxPool2d" => eval_max_pool2d(node, inputs)?,
         other => return Err(anyhow!("Unsupported op '{}'", other)),
     };
     Ok(ValueTensor { tensor, dtype })
@@ -212,32 +217,55 @@ fn eval_conv2d(node: &NodeSpec, inputs: &[ValueTensor]) -> Result<Tensor> {
     let padding = resolve_padding(&node.attrs, &input, &filter, &strides)?;
     let groups = attr_i64(&node.attrs, "groups")?.unwrap_or(1);
 
-    if padding.len() != 4 {
-        return Err(anyhow!("conv2d padding must have 4 elements"));
-    }
     if padding.iter().any(|&p| p != 0) {
-        let pad = vec![padding[0], padding[1], padding[2], padding[3]];
         input = input
-            .f_constant_pad_nd(&pad)
+            .f_constant_pad_nd(&padding)
             .context("constant_pad_nd failed")?;
     }
-    if strides.len() != 2 || dilations.len() != 2 {
-        return Err(anyhow!(
-            "conv2d strides and dilations must each have 2 elements"
-        ));
-    }
-    let stride = vec![strides[0], strides[1]];
-    let dilation = vec![dilations[0], dilations[1]];
     let bias_ref = bias.as_ref();
     let result = input.conv2d(
         &filter,
         bias_ref,
-        &stride,
+        &strides,
         &[0, 0],
-        &dilation,
+        &dilations,
         groups,
     );
     Ok(result)
+}
+
+fn eval_max_pool2d(node: &NodeSpec, inputs: &[ValueTensor]) -> Result<Tensor> {
+    ensure_inputs("maxPool2d", inputs, 1)?;
+    let mut input = inputs[0].tensor.shallow_clone();
+    let window = attr_list_i64(&node.attrs, "window")?
+        .ok_or_else(|| anyhow!("maxPool2d missing window dimensions"))?;
+    if window.len() != 2 {
+        return Err(anyhow!("maxPool2d window must have 2 elements"));
+    }
+    let strides = attr_list_i64(&node.attrs, "strides")?.unwrap_or_else(|| vec![1, 1]);
+    if strides.len() != 2 {
+        return Err(anyhow!("maxPool2d strides must have 2 elements"));
+    }
+    let padding = resolve_padding_with_kernel(
+        node.attrs.get("padding"),
+        input.size()[2],
+        input.size()[3],
+        window[0],
+        window[1],
+        &strides,
+    )?;
+    if padding.iter().any(|&p| p != 0) {
+        input = input
+            .f_constant_pad_nd(&padding)
+            .context("maxPool2d padding failed")?;
+    }
+    Ok(input.max_pool2d(
+        &window,
+        &strides,
+        &[0, 0],
+        &[1, 1],
+        false,
+    ))
 }
 
 fn ensure_inputs(op: &str, inputs: &[ValueTensor], expected: usize) -> Result<()> {
@@ -302,25 +330,38 @@ fn resolve_padding(
     filter: &Tensor,
     strides: &[i64],
 ) -> Result<Vec<i64>> {
-    match attrs.get("padding") {
-        Some(Value::Array(_)) | Some(Value::Null) | None => {
-            Ok(attr_list_i64(attrs, "padding")?.unwrap_or_else(|| vec![0, 0, 0, 0]))
+    resolve_padding_with_kernel(
+        attrs.get("padding"),
+        input.size()[2],
+        input.size()[3],
+        filter.size()[2],
+        filter.size()[3],
+        strides,
+    )
+}
+
+fn resolve_padding_with_kernel(
+    padding: Option<&Value>,
+    h: i64,
+    w: i64,
+    kh: i64,
+    kw: i64,
+    strides: &[i64],
+) -> Result<Vec<i64>> {
+    match padding {
+        Some(Value::Array(arr)) => {
+            let vals = arr
+                .iter()
+                .map(|v| v.as_i64().ok_or_else(|| anyhow!("Padding must be integers")))
+                .collect::<Result<Vec<_>>>()?;
+            if vals.len() != 4 {
+                return Err(anyhow!("Padding list must have 4 elements"));
+            }
+            Ok(vals)
         }
         Some(Value::String(kind)) => match kind.as_str() {
             "valid" | "none" => Ok(vec![0, 0, 0, 0]),
             "same" | "same-upper" | "same-lower" => {
-                let in_size = input.size();
-                if in_size.len() < 4 {
-                    return Err(anyhow!("conv2d input must be 4D"));
-                }
-                let filt_size = filter.size();
-                if filt_size.len() < 4 {
-                    return Err(anyhow!("conv2d filter must be 4D"));
-                }
-                let h = in_size[2];
-                let w = in_size[3];
-                let kh = filt_size[2];
-                let kw = filt_size[3];
                 let sh = strides[0];
                 let sw = strides[1];
                 let out_h = (h + sh - 1) / sh;
@@ -335,6 +376,7 @@ fn resolve_padding(
             }
             other => Err(anyhow!("Unsupported padding string: {}", other)),
         },
+        Some(Value::Null) | None => Ok(vec![0, 0, 0, 0]),
         Some(other) => Err(anyhow!("Invalid padding specification: {}", other)),
     }
 }

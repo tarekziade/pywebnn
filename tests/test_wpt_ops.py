@@ -63,3 +63,17 @@ class Conv2dConformanceTests(WPTConformanceBase):
 
     def test_conv2d(self):
         self._run_cases_from_file()
+
+
+class ReluConformanceTests(WPTConformanceBase):
+    data_file = "relu_tests.json"
+
+    def test_relu(self):
+        self._run_cases_from_file()
+
+
+class MaxPool2dConformanceTests(WPTConformanceBase):
+    data_file = "maxpool2d_tests.json"
+
+    def test_maxpool2d(self):
+        self._run_cases_from_file()
