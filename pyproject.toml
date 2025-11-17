@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pywebnn"
+version = "0.1.0"
+description = "Toy WebNN-style API built on top of PyTorch"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "pywebnn contributors" }]
+dependencies = [
+    "torch==2.9.1",
+    "numpy==2.3.5",
+]
+
+[tool.setuptools]
+packages = ["webnn"]

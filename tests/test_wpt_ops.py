@@ -1,0 +1,60 @@
+import unittest
+
+import torch
+
+from tests.wpt_utils import UnsupportedCase, load_wpt_cases, run_wpt_case
+
+
+class WPTConformanceBase(unittest.TestCase):
+    data_file: str = ""
+
+    def _run_cases_from_file(self):
+        cases = load_wpt_cases(self.data_file)
+        executed = 0
+        for case in cases:
+            with self.subTest(case=case["name"]):
+                try:
+                    results, expected, tolerances = run_wpt_case(case)
+                except UnsupportedCase:
+                    continue
+                executed += 1
+                for name, exp in expected.items():
+                    actual = results[name]
+                    rtol, atol = tolerances[name]
+                    torch.testing.assert_close(
+                        actual,
+                        exp.to(actual.device),
+                        rtol=rtol,
+                        atol=atol,
+                    )
+        self.assertNotEqual(
+            executed, 0, f"No runnable WPT cases found in '{self.data_file}'"
+        )
+
+
+class AddConformanceTests(WPTConformanceBase):
+    data_file = "add_tests.json"
+
+    def test_add(self):
+        self._run_cases_from_file()
+
+
+class ClampConformanceTests(WPTConformanceBase):
+    data_file = "clamp_tests.json"
+
+    def test_clamp(self):
+        self._run_cases_from_file()
+
+
+class SoftmaxConformanceTests(WPTConformanceBase):
+    data_file = "softmax_tests.json"
+
+    def test_softmax(self):
+        self._run_cases_from_file()
+
+
+class Conv2dConformanceTests(WPTConformanceBase):
+    data_file = "conv2d_tests.json"
+
+    def test_conv2d(self):
+        self._run_cases_from_file()
