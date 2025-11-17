@@ -1,9 +1,8 @@
 VENV ?= .venv
-PYTHON := $(VENV)/bin/python
-PIP := $(VENV)/bin/pip
-PYTEST := $(VENV)/bin/pytest
+ACTIVATE = . $(VENV)/bin/activate
+RUST_CRATE := pywebnn_rust
 
-.PHONY: venv deps test clean
+.PHONY: venv deps rust test clean
 
 venv:
 	@if [ ! -d "$(VENV)" ]; then \
@@ -11,12 +10,19 @@ venv:
 	fi
 
 deps: venv
-	$(PIP) install --upgrade pip
-	$(PIP) install -r requirements.txt
-	$(PIP) install -e .
+	$(ACTIVATE) && pip install --upgrade pip
+	$(ACTIVATE) && pip install -r requirements.txt
+	$(ACTIVATE) && pip install --no-build-isolation -e .
 
-test: deps
-	$(PYTEST) tests/
+rust: deps
+	$(ACTIVATE) && \
+		PYTHONPATH=$(VENV)/lib/python3.11/site-packages \
+		LIBTORCH_USE_PYTORCH=1 \
+		LIBTORCH_BYPASS_VERSION_CHECK=1 \
+		maturin develop --release -m $(RUST_CRATE)/Cargo.toml
+
+test: rust
+	$(ACTIVATE) && pytest tests/
 
 clean:
 	rm -rf "$(VENV)"

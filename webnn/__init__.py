@@ -37,13 +37,45 @@ torch.Size([2, 3])
 
 """
 
+import ctypes
+import json
+import math
+import os
+import sys
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-import math
 import numpy as np
 import torch
 import torch.nn.functional as F
+
+os.environ.setdefault("LIBTORCH_USE_PYTORCH", "1")
+os.environ.setdefault("LIBTORCH_BYPASS_VERSION_CHECK", "1")
+
+def _load_torch_shared_libs() -> None:
+    if sys.platform != "darwin":
+        return
+    lib_dir = Path(torch.__file__).resolve().parent / "lib"
+    if not lib_dir.is_dir():
+        return
+    for name in ("libtorch_cpu.dylib", "libc10.dylib", "libtorch.dylib", "libtorch_python.dylib"):
+        candidate = lib_dir / name
+        if candidate.exists():
+            try:
+                ctypes.CDLL(str(candidate))
+            except OSError:
+                pass
+
+_load_torch_shared_libs()
+
+try:  # pragma: no cover - optional dependency
+    import pywebnn_rust as _rust_backend
+
+    _HAS_RUST_BACKEND = True
+except ImportError:  # pragma: no cover - optional dependency
+    _rust_backend = None
+    _HAS_RUST_BACKEND = False
 
 
 TensorLike = Union[torch.Tensor, np.ndarray, float, int]
@@ -129,12 +161,14 @@ class MLOperand:
     def __init__(
         self,
         builder: "MLGraphBuilder",
+        operand_id: int,
         name: Optional[str],
         desc: MLOperandDescriptor,
         const_value: Optional[torch.Tensor] = None,
         node: Optional[_Node] = None,
     ):
         self._builder = builder
+        self.id = operand_id
         self.name = name
         self.descriptor = desc
         self.const_value = const_value
@@ -152,9 +186,19 @@ class MLOperand:
 class MLContext:
     """Toy execution context with trivial device selection."""
 
-    def __init__(self, device: Optional[Union[str, torch.device]] = None):
+    def __init__(
+        self,
+        device: Optional[Union[str, torch.device]] = None,
+        backend: str = "python",
+    ):
         self._destroyed = False
         self._device = self._resolve_device(device)
+        backend = backend.lower()
+        if backend not in ("python", "rust"):
+            raise ValueError(f"Unsupported backend '{backend}'")
+        if backend == "rust" and not _HAS_RUST_BACKEND:
+            raise RuntimeError("Rust backend is not available. Build it with maturin.")
+        self._backend = backend
 
     @staticmethod
     def _resolve_device(device_like: Optional[Union[str, torch.device]]) -> torch.device:
@@ -168,6 +212,10 @@ class MLContext:
     def device(self) -> torch.device:
         return self._device
 
+    @property
+    def backend(self) -> str:
+        return self._backend
+
     def destroy(self):
         self._destroyed = True
 
@@ -178,13 +226,15 @@ class MLGraphBuilder:
         self._operands: List[MLOperand] = []
         self._inputs: Dict[str, MLOperand] = {}
         self._constants: List[MLOperand] = []
+        self._next_operand_id = 0
 
     def input(self, name: str, descriptor: Dict[str, Any]) -> MLOperand:
         desc = MLOperandDescriptor(
             dataType=descriptor.get("dataType", "float32"),
             dimensions=descriptor.get("dimensions"),
         )
-        op = MLOperand(self, name=name, desc=desc)
+        operand_id = self._allocate_operand_id()
+        op = MLOperand(self, operand_id, name=name, desc=desc)
         self._operands.append(op)
         self._inputs[name] = op
         return op
@@ -207,7 +257,8 @@ class MLGraphBuilder:
             # constant(dataType, value)
             desc = MLOperandDescriptor(dataType=descriptor_or_type, dimensions=None)
             t = _to_tensor(buffer, _dtype_from_str(desc.dataType), device=device)
-        const = MLOperand(self, name=None, desc=desc, const_value=t)
+        operand_id = self._allocate_operand_id()
+        const = MLOperand(self, operand_id, name=None, desc=desc, const_value=t)
         self._operands.append(const)
         self._constants.append(const)
         return const
@@ -217,9 +268,15 @@ class MLGraphBuilder:
         node = _Node(op=op, inputs=inputs, attrs=attrs)
         # Infer a basic descriptor based on first input
         base = inputs[0].descriptor if inputs else MLOperandDescriptor()
-        out = MLOperand(self, name=None, desc=base, node=node)
+        operand_id = self._allocate_operand_id()
+        out = MLOperand(self, operand_id, name=None, desc=base, node=node)
         self._operands.append(out)
         return out
+
+    def _allocate_operand_id(self) -> int:
+        oid = self._next_operand_id
+        self._next_operand_id += 1
+        return oid
 
     def add(self, a: MLOperand, b: MLOperand) -> MLOperand:
         return self._emit("add", [a, b])
@@ -325,7 +382,52 @@ class MLGraphBuilder:
         for out in outputs.values():
             dfs(out)
 
+        if self._ctx.backend == "rust":
+            spec = self._build_rust_spec(order, outputs)
+            return RustMLGraph(self._ctx, spec, self._inputs, outputs)
         return MLGraph(self._ctx, order, outputs, self._inputs)
+
+    def _build_rust_spec(
+        self, topo: List[MLOperand], outputs: Dict[str, MLOperand]
+    ) -> Dict[str, Any]:
+        nodes = []
+        for opnd in topo:
+            if opnd.node is None:
+                continue
+            nodes.append(
+                {
+                    "id": opnd.id,
+                    "op": opnd.node.op,
+                    "inputs": [inp.id for inp in opnd.node.inputs],
+                    "attrs": _serialize_attrs(opnd.node.attrs),
+                    "descriptor": _descriptor_dict(opnd.descriptor),
+                }
+            )
+        constants = [
+            {
+                "id": const.id,
+                "descriptor": _descriptor_dict(
+                    const.descriptor, _tensor_shape(const.const_value)
+                ),
+                "data": _tensor_to_flat_list(const.const_value),
+            }
+            for const in self._constants
+        ]
+        inputs = [
+            {
+                "id": opnd.id,
+                "name": name,
+                "descriptor": _descriptor_dict(opnd.descriptor),
+            }
+            for name, opnd in self._inputs.items()
+        ]
+        outputs_map = {name: opnd.id for name, opnd in outputs.items()}
+        return {
+            "nodes": nodes,
+            "constants": constants,
+            "inputs": inputs,
+            "outputs": outputs_map,
+        }
 
 
 class MLGraph:
@@ -385,6 +487,45 @@ class MLGraph:
         results: Dict[str, torch.Tensor] = {}
         for name, opnd in self._outputs.items():
             results[name] = resolve(opnd)
+        return results
+
+
+class RustMLGraph:
+    def __init__(
+        self,
+        ctx: MLContext,
+        spec: Dict[str, Any],
+        inputs: Dict[str, MLOperand],
+        outputs: Dict[str, MLOperand],
+    ):
+        if not _HAS_RUST_BACKEND:
+            raise RuntimeError("Rust backend is not available")
+        self._ctx = ctx
+        self._spec_json = json.dumps(spec)
+        self._inputs = inputs
+        self._outputs = outputs
+        self._destroyed = False
+
+    def destroy(self):
+        self._destroyed = True
+
+    def compute(self, feeds: Dict[str, TensorLike]) -> Dict[str, torch.Tensor]:
+        if self._destroyed:
+            raise RuntimeError("graph destroyed")
+        payload = {}
+        for name, opnd in self._inputs.items():
+            if name not in feeds:
+                raise KeyError(f"Missing required input '{name}'")
+            payload[name] = _torch_to_payload(feeds[name], opnd.descriptor)
+        feeds_json = json.dumps(payload)
+        results_json = _rust_backend.execute(self._spec_json, feeds_json)
+        raw_results = json.loads(results_json)
+        device = self._ctx.device
+        results: Dict[str, torch.Tensor] = {}
+        for name, opnd in self._outputs.items():
+            if name not in raw_results:
+                raise KeyError(f"Rust backend missing output '{name}'")
+            results[name] = _payload_to_torch(raw_results[name], device)
         return results
 
 
@@ -482,6 +623,66 @@ def _eval_node(node: _Node, xs: List[torch.Tensor]) -> torch.Tensor:
         return torch.cat(xs, dim=axis)
 
     raise NotImplementedError(f"Op not implemented in toy runtime: {op}")
+
+
+def _descriptor_dict(
+    desc: MLOperandDescriptor, fallback_shape: Optional[List[int]] = None
+) -> Dict[str, Any]:
+    dims = desc.dimensions if desc.dimensions is not None else fallback_shape
+    if dims is None:
+        raise ValueError("Rust backend requires static tensor dimensions")
+    shape = _normalize_shape(dims)
+    return {"dataType": desc.dataType, "shape": shape}
+
+
+def _normalize_shape(shape: List[Optional[int]]) -> List[int]:
+    normalized: List[int] = []
+    for dim in shape:
+        if dim is None:
+            raise ValueError("Rust backend does not support dynamic dimensions")
+        normalized.append(int(dim))
+    return normalized
+
+
+def _tensor_shape(t: torch.Tensor) -> List[int]:
+    return [int(d) for d in t.shape]
+
+
+def _tensor_to_flat_list(t: torch.Tensor) -> List[float]:
+    data = t.detach().cpu()
+    if data.dtype == torch.float16:
+        data = data.to(torch.float32)
+    return data.reshape(-1).tolist()
+
+
+def _serialize_attrs(attrs: Dict[str, Any]) -> Dict[str, Any]:
+    def convert(value: Any) -> Any:
+        if isinstance(value, (list, tuple)):
+            return [convert(v) for v in value]
+        return value
+
+    return {k: convert(v) for k, v in attrs.items()}
+
+
+def _torch_to_payload(
+    tensor: TensorLike, descriptor: MLOperandDescriptor
+) -> Dict[str, Any]:
+    t = torch.as_tensor(tensor)
+    dt = _dtype_from_str(descriptor.dataType)
+    t = t.to(dt).detach().cpu()
+    data = _tensor_to_flat_list(t)
+    shape = _tensor_shape(t)
+    return {
+        "data": data,
+        "descriptor": {"dataType": descriptor.dataType, "shape": shape},
+    }
+
+
+def _payload_to_torch(payload: Dict[str, Any], device: torch.device) -> torch.Tensor:
+    dtype = _dtype_from_str(payload["dataType"])
+    shape = [int(dim) for dim in payload["shape"]]
+    arr = np.array(payload["data"], dtype=np.float32).reshape(shape)
+    return torch.tensor(arr, dtype=torch.float32, device=device).to(dtype)
 
 
 # --- Minimal test/demo -------------------------------------------------------

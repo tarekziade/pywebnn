@@ -1,0 +1,14 @@
+[build-system]
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
+
+[project]
+name = "pywebnn-rust"
+version = "0.1.0"
+requires-python = ">=3.9"
+description = "Rust backend for the pywebnn toy runtime"
+authors = [{ name = "pywebnn contributors" }]
+
+[tool.maturin]
+bindings = "pyo3"
+module-name = "pywebnn_rust"

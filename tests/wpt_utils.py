@@ -7,6 +7,14 @@ import torch
 
 from webnn import MLContext, MLGraphBuilder, MLOperand
 
+BACKENDS: List[str] = ["python"]
+try:  # pragma: no cover - optional dependency
+    import pywebnn_rust as _  # noqa: F401
+
+    BACKENDS.append("rust")
+except ImportError:  # pragma: no cover - optional dependency
+    pass
+
 
 DTYPE_MAP: Dict[str, torch.dtype] = {
     "float32": torch.float32,
@@ -29,10 +37,12 @@ def load_wpt_cases(filename: str) -> List[dict]:
         return json.load(fp)
 
 
-def run_wpt_case(case: dict) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], Dict[str, Tuple[float, float]]]:
+def run_wpt_case(
+    case: dict, backend: str = "python"
+) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], Dict[str, Tuple[float, float]]]:
     """Build the graph described by `case` and return computed + expected outputs."""
 
-    ctx = MLContext()
+    ctx = MLContext(backend=backend)
     builder = MLGraphBuilder(ctx)
 
     operands, feeds = _prepare_inputs(builder, case["graph"]["inputs"])
