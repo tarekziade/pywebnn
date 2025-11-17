@@ -22,6 +22,7 @@ Both backends currently support the following operations:
 - `input` and `constant` operands for feeding graph values.
 - Elementwise math: `add`, `clamp`, activation functions (`relu`, `sigmoid`,
   `tanh`), and `softmax`.
+- Normalization: `batchNormalization`.
 - Linear algebra: `matmul`.
 - Convolutional ops: `conv2d` (NCHW inputs, OIHW filters, optional bias),
   `maxPool2d`, and `averagePool2d`.
@@ -36,8 +37,8 @@ Every op listed above has at least one WPT-derived test vector in
 
 This is not a complete WebNN implementation. Notable omissions include:
 
-- Many WebNN ops (e.g., `batchNormalization`, `element-wise`
-  variations, activation/broadcast variants beyond the basics).
+- Many WebNN ops (e.g., `element-wise` variations, activation/broadcast
+  variants beyond the basics).
 - Advanced conv2d features such as NHWC inputs, HWIO filters, fused activations,
   automatic padding modes beyond the simple SAME/VALID that the Rust backend
   understands.

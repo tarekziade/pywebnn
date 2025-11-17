@@ -261,6 +261,7 @@ fn eval_node(node: &NodeSpec, inputs: &[ValueTensor]) -> Result<ValueTensor> {
             ensure_inputs("matmul", inputs, 2)?;
             inputs[0].tensor.matmul(&inputs[1].tensor)
         }
+        "batchNormalization" => eval_batch_normalization(node, inputs)?,
         "conv2d" => eval_conv2d(node, inputs)?,
         "maxPool2d" => eval_max_pool2d(node, inputs)?,
         "gather" => eval_gather(node, inputs)?,
@@ -268,6 +269,95 @@ fn eval_node(node: &NodeSpec, inputs: &[ValueTensor]) -> Result<ValueTensor> {
         other => return Err(anyhow!("Unsupported op '{}'", other)),
     };
     Ok(ValueTensor { tensor, dtype })
+}
+
+fn eval_batch_normalization(node: &NodeSpec, inputs: &[ValueTensor]) -> Result<Tensor> {
+    if inputs.len() < 3 {
+        return Err(anyhow!(
+            "batchNormalization requires input, mean, and variance tensors"
+        ));
+    }
+    let input = &inputs[0].tensor;
+    if input.dim() == 0 {
+        return Err(anyhow!(
+            "batchNormalization input rank must be at least 1"
+        ));
+    }
+    let axis = attr_i64(&node.attrs, "axis")?.unwrap_or(1);
+    let axis = normalize_axis(axis, input.dim() as i64)?;
+    let channel_dim = input.size()[axis as usize];
+    if channel_dim == 0 {
+        return Err(anyhow!("batchNormalization channel axis is empty"));
+    }
+    let epsilon = attr_f64(&node.attrs, "epsilon")?.unwrap_or(1e-5);
+    let mean = reshape_bn_param(&inputs[1].tensor, axis, input)?;
+    let variance = reshape_bn_param(&inputs[2].tensor, axis, input)?;
+    let mut next_idx = 3;
+    let has_scale = attr_bool(&node.attrs, "hasScale")?.unwrap_or(inputs.len() > next_idx);
+    let scale = if has_scale {
+        if inputs.len() <= next_idx {
+            return Err(anyhow!("batchNormalization missing scale operand"));
+        }
+        let tensor = reshape_bn_param(&inputs[next_idx].tensor, axis, input)?;
+        next_idx += 1;
+        Some(tensor)
+    } else {
+        None
+    };
+    let has_bias_default = inputs.len() > next_idx;
+    let has_bias = attr_bool(&node.attrs, "hasBias")?.unwrap_or(has_bias_default);
+    let bias = if has_bias {
+        if inputs.len() <= next_idx {
+            return Err(anyhow!("batchNormalization missing bias operand"));
+        }
+        Some(reshape_bn_param(&inputs[next_idx].tensor, axis, input)?)
+    } else {
+        None
+    };
+    let eps_tensor = scalar_tensor(epsilon, inputs[0].dtype, input.device())?;
+    let inv_std = (variance + &eps_tensor).rsqrt();
+    let mut output = (input - &mean) * inv_std;
+    if let Some(scale) = scale {
+        output = output * scale;
+    }
+    if let Some(bias) = bias {
+        output = output + bias;
+    }
+    Ok(output)
+}
+
+fn reshape_bn_param(param: &Tensor, axis: i64, input: &Tensor) -> Result<Tensor> {
+    if param.dim() == input.dim() {
+        return Ok(param
+            .shallow_clone()
+            .to_kind(input.kind())
+            .to_device(input.device()));
+    }
+    let numel = i64::try_from(param.numel())
+        .context("batchNormalization parameter tensor too large")?;
+    if numel == 0 {
+        return Err(anyhow!("batchNormalization parameter tensor is empty"));
+    }
+    let axis_index = axis as usize;
+    let mut shape = vec![1i64; input.dim() as usize];
+    if numel == 1 {
+        shape[axis_index] = 1;
+    } else {
+        let channel = input.size()[axis_index];
+        if numel != channel {
+            return Err(anyhow!(
+                "batchNormalization parameter size {} does not match channel dimension {}",
+                numel,
+                channel
+            ));
+        }
+        shape[axis_index] = channel;
+    }
+    Ok(param
+        .shallow_clone()
+        .to_kind(input.kind())
+        .to_device(input.device())
+        .reshape(&shape))
 }
 
 fn eval_conv2d(node: &NodeSpec, inputs: &[ValueTensor]) -> Result<Tensor> {
@@ -469,6 +559,18 @@ fn attr_i64(attrs: &Value, key: &str) -> Result<Option<i64>> {
         Some(Value::Null) | None => Ok(None),
         Some(Value::String(s)) if s == "None" => Ok(None),
         Some(other) => Err(anyhow!("Attribute '{}' expected int, got {}", key, other)),
+    }
+}
+
+fn attr_bool(attrs: &Value, key: &str) -> Result<Option<bool>> {
+    match attrs.get(key) {
+        Some(Value::Bool(flag)) => Ok(Some(*flag)),
+        Some(Value::Null) | None => Ok(None),
+        Some(other) => Err(anyhow!(
+            "Attribute '{}' expected bool, got {}",
+            key,
+            other
+        )),
     }
 }
 

@@ -326,6 +326,33 @@ class MLGraphBuilder:
     def matmul(self, a: MLOperand, b: MLOperand) -> MLOperand:
         return self._emit("matmul", [a, b])
 
+    def batchNormalization(
+        self,
+        x: MLOperand,
+        mean: MLOperand,
+        variance: MLOperand,
+        scale: Optional[MLOperand] = None,
+        bias: Optional[MLOperand] = None,
+        *,
+        axis: int = 1,
+        epsilon: float = 1e-5,
+    ) -> MLOperand:
+        inputs = [x, mean, variance]
+        if scale is not None:
+            inputs.append(scale)
+        if bias is not None:
+            inputs.append(bias)
+        has_scale = scale is not None
+        has_bias = bias is not None
+        return self._emit(
+            "batchNormalization",
+            inputs,
+            axis=axis,
+            epsilon=float(epsilon),
+            hasScale=has_scale,
+            hasBias=has_bias,
+        )
+
     def conv2d(
         self,
         x: MLOperand,
@@ -637,6 +664,60 @@ def _eval_node(node: _Node, xs: List[torch.Tensor]) -> torch.Tensor:
         return F.softmax(xs[0], dim=axis)
     if op == "matmul":
         return torch.matmul(xs[0], xs[1])
+    if op == "batchNormalization":
+        x = xs[0]
+        if x.dim() == 0:
+            raise RuntimeError("batchNormalization requires tensor rank >= 1")
+        axis = int(node.attrs.get("axis", 1))
+        axis = _normalize_axis(axis, x.dim())
+        channel_dim = x.shape[axis]
+        if channel_dim == 0:
+            raise RuntimeError("batchNormalization channel axis is empty")
+        epsilon = float(node.attrs.get("epsilon", 1e-5))
+        mean = xs[1]
+        variance = xs[2]
+        next_idx = 3
+        has_scale = bool(node.attrs.get("hasScale", len(xs) > next_idx))
+        scale = xs[next_idx] if has_scale and len(xs) > next_idx else None
+        if has_scale:
+            next_idx += 1
+        has_bias_default = len(xs) > next_idx
+        has_bias = bool(node.attrs.get("hasBias", has_bias_default))
+        bias = xs[next_idx] if has_bias and len(xs) > next_idx else None
+
+        def _reshape_param(param: torch.Tensor, name: str) -> torch.Tensor:
+            p = param.to(x.dtype)
+            if p.dim() == x.dim():
+                return p
+            flat = p.reshape(-1)
+            if flat.numel() == 0:
+                raise RuntimeError(f"batchNormalization {name} tensor is empty")
+            view = [1] * x.dim()
+            if flat.numel() == 1:
+                view[axis] = 1
+                return flat.reshape(view)
+            if channel_dim is None:
+                raise RuntimeError("batchNormalization requires static channel size at runtime")
+            expected = int(channel_dim)
+            if flat.numel() != expected:
+                raise RuntimeError(
+                    f"batchNormalization {name} has incompatible size {flat.numel()} "
+                    f"for channel dimension {expected}"
+                )
+            view[axis] = expected
+            return flat.reshape(view)
+
+        mean = _reshape_param(mean, "mean")
+        variance = _reshape_param(variance, "variance")
+        scale = _reshape_param(scale, "scale") if scale is not None else None
+        bias = _reshape_param(bias, "bias") if bias is not None else None
+        eps = torch.tensor(epsilon, dtype=x.dtype, device=x.device)
+        y = (x - mean) * torch.rsqrt(variance + eps)
+        if scale is not None:
+            y = y * scale
+        if bias is not None:
+            y = y + bias
+        return y
     if op == "conv2d":
         # Expect NCHW tensors and OIHW weights (like PyTorch); groups supported
         x, w = xs[0], xs[1]

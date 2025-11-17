@@ -183,6 +183,8 @@ def _apply_operator(builder: MLGraphBuilder, operands: Dict[str, MLOperand], op_
         )
     elif name == "matmul":
         result = builder.matmul(operands[args["a"]], operands[args["b"]])
+    elif name == "batchNormalization":
+        result = _apply_batch_normalization(builder, operands, args)
     else:
         raise UnsupportedCase(f"Unsupported operator '{name}'")
 
@@ -265,4 +267,25 @@ def _apply_pool(pool_fn, operand: MLOperand, options: dict) -> MLOperand:
         windowDimensions=tuple(int(v) for v in window),
         strides=tuple(int(s) for s in strides),
         padding=padding,
+    )
+
+
+def _apply_batch_normalization(
+    builder: MLGraphBuilder, operands: Dict[str, MLOperand], args: dict
+) -> MLOperand:
+    options = args.get("options", {}) or {}
+    scale_name = options.get("scale")
+    bias_name = options.get("bias")
+    scale = operands[scale_name] if scale_name else None
+    bias = operands[bias_name] if bias_name else None
+    axis = int(options.get("axis", 1))
+    epsilon = float(options.get("epsilon", 1e-5))
+    return builder.batchNormalization(
+        operands[args["input"]],
+        operands[args["mean"]],
+        operands[args["variance"]],
+        scale=scale,
+        bias=bias,
+        axis=axis,
+        epsilon=epsilon,
     )

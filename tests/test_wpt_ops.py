@@ -91,3 +91,10 @@ class SliceConformanceTests(WPTConformanceBase):
 
     def test_slice(self):
         self._run_cases_from_file()
+
+
+class BatchNormalizationConformanceTests(WPTConformanceBase):
+    data_file = "batchnormalization_tests.json"
+
+    def test_batch_normalization(self):
+        self._run_cases_from_file()
